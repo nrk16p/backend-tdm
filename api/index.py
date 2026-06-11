@@ -493,6 +493,7 @@ def create_or_update_ticket(
 
             if job and status:
                 job.status = status
+                job.updated_at = datetime.utcnow()
 
             affected.append({"load_id": lid, "status": status})
 
