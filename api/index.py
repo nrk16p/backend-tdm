@@ -21,7 +21,7 @@ models.Base.metadata.create_all(bind=database.engine)
 app = FastAPI(
     title="TDM Backend API",
     description="API สำหรับ TDM Fleet Management",
-    version="2.2.2",    # << ใส่ version ที่ต้องการ
+    version="2.2.4",    # << ใส่ version ที่ต้องการ
     contact={
         "name": "Plug",
         "email": "narongkorn.a@menatransport.co.th",
@@ -329,6 +329,7 @@ def get_jobs(
             "gps_vendor": vehicle.gps_vendor if vehicle else None,
             "gps_id": vehicle.gps_id if vehicle else None,
             "current_latlng": vehicle.current_latlng if vehicle else None,
+            "status": vehicle.status if vehicle else None,
             "gps_updated_at": (
                 vehicle.gps_updated_at.isoformat()
                 if vehicle and vehicle.gps_updated_at else None
@@ -635,23 +636,44 @@ def create_job(
     }
 
 @app.put("/jobs")
-def update_job(
-    load_id: str = Query(...),
-    data: JobSchemaPut = Body(...),
+def update_jobs(
+    data_list: List[JobSchemaPut] = Body(...),
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_user)
 ):
+    """
+    🔁 Update multiple jobs in a single request.
+    Each item must include `load_id`.
+    """
     now = datetime.now()
-    job = db.query(models.Job).filter(models.Job.load_id == load_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    for field, value in data.dict(exclude_unset=True).items():
-        setattr(job, field, value)
-    job.updated_at = now
-    job.updated_by = current_user.username
+    updated_jobs = []
+    not_found = []
+
+    for data in data_list:
+        load_id = data.load_id
+        job = db.query(models.Job).filter(models.Job.load_id == load_id).first()
+
+        if not job:
+            not_found.append(load_id)
+            continue
+
+        for field, value in data.dict(exclude_unset=True).items():
+            setattr(job, field, value)
+
+        job.updated_at = now
+        job.updated_by = current_user.username
+        updated_jobs.append(job)
+
     db.commit()
-    db.refresh(job)
-    return {"message": "✅ Job updated", "job": model_to_dict(job)}
+
+    for job in updated_jobs:
+        db.refresh(job)
+
+    return {
+        "message": f"✅ Updated {len(updated_jobs)} job(s) successfully",
+        "updated_jobs": [model_to_dict(j) for j in updated_jobs],
+        "not_found": not_found
+    }
 
 @app.delete("/jobs")
 def delete_job(
@@ -885,13 +907,6 @@ def upsert_vehicle_data(
     data_list: List[VehicleCurrentDataCreate] = Body(...),
     db: Session = Depends(get_db),
 ):
-    """
-    ✅ Always bulk UPSERT for Vehicle Current Data
-    - Accepts multiple records in one POST
-    - If gps_vendor = 'dtc' → match gps_id
-    - If gps_vendor = 'thaitracking' → match plate_master
-    - Updates if exists, inserts if new
-    """
     results = []
     inserted, updated = 0, 0
 
@@ -900,18 +915,26 @@ def upsert_vehicle_data(
         if data.gps_vendor == "dtc":
             lookup_field = models.VehicleCurrentData.gps_id
             lookup_value = data.gps_id
-        elif data.gps_vendor == "thaitracking":
+        elif data.gps_vendor in ("thaitracking", "hino", "songdee"):
             lookup_field = models.VehicleCurrentData.plate_master
             lookup_value = data.plate_master
         else:
             print(f"⚠️ Skipping unknown vendor: {data.gps_vendor}")
             continue
 
-        # 2️⃣ Find existing record
-        record = db.query(models.VehicleCurrentData).filter(lookup_field == lookup_value).first()
+        # 2️⃣ Find ALL matching records (duplicates cause the StaleDataError)
+        records = db.query(models.VehicleCurrentData).filter(lookup_field == lookup_value).all()
 
-        # 3️⃣ Update or Insert
-        if record:
+        # 3️⃣ Delete duplicates, keep only first
+        if len(records) > 1:
+            for dup in records[1:]:
+                db.delete(dup)
+            db.flush()  # flush deletes before update
+            print(f"⚠️ Removed {len(records)-1} duplicate(s) for {lookup_value}")
+
+        # 4️⃣ Update or Insert
+        if records:
+            record = records[0]
             for key, value in data.dict(exclude_unset=True).items():
                 setattr(record, key, value)
             record.updated_at = datetime.utcnow()
@@ -926,7 +949,7 @@ def upsert_vehicle_data(
 
         results.append(record)
 
-    # 4️⃣ Commit once for performance
+    # 5️⃣ Commit once for performance
     db.commit()
     for r in results:
         db.refresh(r)
