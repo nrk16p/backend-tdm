@@ -956,3 +956,19 @@ def upsert_vehicle_data(
 
     print(f"✅ Vehicle upsert complete → Inserted: {inserted}, Updated: {updated}, Total: {len(results)}")
     return results
+
+@app.get("/gpsdata", response_model=List[VehicleCurrentDataOut])
+def get_vehicle_current_data(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+    plate_master: Optional[List[str]] = Query(None, description="Filter by plate(s)"),
+    gps_vendor: Optional[List[str]] = Query(None, description="Filter by GPS vendor(s)"),
+):
+    q = db.query(models.VehicleCurrentData)
+
+    if plate_master:
+        q = q.filter(models.VehicleCurrentData.plate_master.in_(plate_master))
+    if gps_vendor:
+        q = q.filter(models.VehicleCurrentData.gps_vendor.in_(gps_vendor))
+
+    return q.order_by(models.VehicleCurrentData.plate_master).all()
