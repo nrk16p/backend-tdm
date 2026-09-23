@@ -265,6 +265,7 @@ class VehicleCurrentDataBase(BaseModel):
     gps_updated_at: Optional[datetime] = None
     gps_id: Optional[str] = None
     status: Optional[str] = None
+    speed: Optional[int] = None
 
 class VehicleCurrentDataCreate(VehicleCurrentDataBase):
     pass

@@ -151,3 +151,4 @@ class VehicleCurrentData(Base):
     gps_updated_at = Column(TIMESTAMP)
     gps_id = Column(String)
     status = Column(String)
+    speed = Column(Integer)
